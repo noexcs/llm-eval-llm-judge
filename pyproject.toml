@@ -1,0 +1,64 @@
+[project]
+name = "llm-eval"
+version = "0.1.0"
+description = "CLI for LLM task evaluation with dual-LLM architecture"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [
+    {name = "noexcs", email = "noexcs@163.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "openai>=1.0.0",
+    "anthropic>=0.25.0",
+    "click>=8.1.0",
+    "pydantic>=2.0.0",
+    "tenacity>=8.2.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "datasets>=2.0.0",
+]
+
+[project.scripts]
+llm-eval = "llm_eval.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
+    "flake8>=6.0.0",
+    "pre-commit>=3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/noexcs/llm-eval"
+Repository = "https://github.com/noexcs/llm-eval"
+Issues = "https://github.com/noexcs/llm-eval/issues"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = {find = {exclude = ["results", "*.egg-info", "*.pyc", "__pycache__", ".mypy_cache", ".pytest_cache"]}}
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
