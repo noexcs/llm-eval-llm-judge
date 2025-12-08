@@ -19,7 +19,11 @@ Prompts = Iterable[Prompt]
 
 class JudgePolicy(str, Enum):
     LLM = "llm"
+    # LLM judge, if llm judge failed then rule judge
+    LLM_AND_RULE = "llm_and_rule"
     RULE = "rule"
+    # Rule judge, if rule judge failed then LLM judge
+    RULE_AND_LLM = "rule_and_llm"
 
 
 class Task(ABC):
@@ -52,7 +56,7 @@ class Task(ABC):
         pass
 
     @abstractmethod
-    def rule_based_judge(self, sample: Dict, model_response: str) -> Judgment:
+    def rule_based_judge(self, sample: Dict, test_response: str) -> Judgment:
         """Rule-based judge for tasks without a judge LLM."""
         pass
 

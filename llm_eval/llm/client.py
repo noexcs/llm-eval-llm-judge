@@ -30,18 +30,15 @@ class LLMClient(ABC):
         pass
 
     @abstractmethod
-    def _raw_generate(self, prompt: Iterable[ChatCompletionMessageParam], **kwargs) -> str:
-        """不带重试的原始单次调用（仅内部使用）"""
+    def _raw_generate(self, prompt: Iterable[ChatCompletionMessageParam], temperature=None, **kwargs) -> str:
         pass
 
-    def generate_batch(self, prompts: Iterable[Iterable[ChatCompletionMessageParam]], **kwargs) -> List[str]:
-        """并发生成，保持顺序，返回 List[str]"""
+    def generate_batch(self, prompts: Iterable[Iterable[ChatCompletionMessageParam]], temperature=None, **kwargs) -> List[str]:
         prompts_list = list(prompts)
         results = ["" for _ in prompts_list]
 
         def _task(idx: int, prompt: Iterable[ChatCompletionMessageParam]):
-            # 直接调用不带装饰器的原始实现
-            return idx, self._raw_generate(prompt, **kwargs)
+            return idx, self._raw_generate(prompt, temperature, **kwargs)
 
         with ThreadPoolExecutor(max_workers=self.config.batch_size) as executor:
             future_to_idx = {
@@ -77,12 +74,12 @@ class OpenAIClient(LLMClient):
     def generate(self, prompt: Iterable[ChatCompletionMessageParam], **kwargs) -> str:
         return self._raw_generate(prompt, **kwargs)
 
-    def _raw_generate(self, prompt: Iterable[ChatCompletionMessageParam], **kwargs) -> str:
+    def _raw_generate(self, prompt: Iterable[ChatCompletionMessageParam], temperature=None, **kwargs) -> str:
         try:
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=prompt,
-                temperature=self.config.temperature,
+                temperature=temperature if temperature is not None else self.config.temperature,
                 **kwargs,
             )
             content = response.choices[0].message.content

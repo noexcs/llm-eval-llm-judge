@@ -3,8 +3,7 @@ GSM8K task implementation.
 """
 import logging
 import re
-from platform import system
-from typing import List, Dict, Literal
+from typing import List, Dict
 
 from openai.types.chat import ChatCompletionUserMessageParam, \
     ChatCompletionSystemMessageParam
@@ -22,8 +21,9 @@ class GS8MKTask(Task):
         self.split = "test"
         self.limit = None
 
+    @property
     def judge_policy(self) -> JudgePolicy:
-        return JudgePolicy.LLM
+        return JudgePolicy.RULE_AND_LLM
 
     def load_samples(self) -> List[TaskSample]:
         """Load GSM8K dataset via Hugging Face datasets library."""
@@ -57,7 +57,6 @@ class GS8MKTask(Task):
         logger.info(f"Loaded {len(samples)} samples from Hugging Face GSM8K {self.split} split")
         return samples
 
-
     def build_test_prompt(self, sample: Dict) -> Prompt:
         """Build prompt for test LLM."""
         prompt_text = (
@@ -72,24 +71,62 @@ class GS8MKTask(Task):
     def build_judge_prompt(self, sample: Dict, test_response: str) -> Prompt:
         """Build prompt for judge LLM."""
         system_prompt = (
-            "You are a strict but fair math evaluator. Your task is to determine whether the model's final answer "
-            "is mathematically equivalent to the reference answer.\n\n"
-            "Rules:\n"
-            "- Focus ONLY on the final numerical value (ignore units, text, or intermediate steps).\n"
-            "- Extract the final answer from the model's response. Look for numbers inside \\boxed{}, "
-            "or the last number mentioned if no box is present.\n"
-            "- Accept equivalent forms: integers, decimals, fractions, percentages (e.g., 0.5 = 1/2 = 50%).\n"
-            "- Ignore commas used as thousand separators (1,234 = 1234).\n"
-            "- The reference answer is provided both in raw form and as a cleaned numerical value for comparison.\n"
-            "- Output exactly one score: 1 if numerically equivalent, 0 otherwise.\n\n"
-            "Respond in the following format only:\n"
-            "SCORE: 1  or  SCORE: 0\n"
-            "EXPLANATION: <optional very short explanation only if score is 0>\n"
+"""
+You are a strict but fair math evaluator. Your task is to determine whether the model's final answer is mathematically equivalent to the reference answer.
+
+IMPORTANT RULES:
+- DO NOT solve or re-derive the problem yourself.
+- Extract the final answer from the model's answer. Look for numbers inside \\boxed{}, or the last number mentioned if no box is present.
+- Focus ONLY on the final numerical value (ignore units, text, or intermediate steps).
+- Accept equivalent forms: integers, decimals, fractions, percentages (e.g., 0.5 = 1/2 = 50%).
+- Ignore commas used as thousand separators (1,234 = 1234).
+- The reference answer is provided both in raw form and as a cleaned numerical value for comparison.
+- Output exactly one score: 1 if numerically equivalent, 0 otherwise.
+
+Respond in the following format only:
+SCORE: 1  or  SCORE: 0
+
+EXAMPLE 1:
+# **Question**:
+ What is the square root of 16?
+
+# **Model's answer**:
+ \\boxed{4}
+
+# **Reference Answer (ground truth)**:
+ \\boxed{4}
+
+# **Output**:
+The model's answer \\boxed{4} and the reference answer \\boxed{4} are mathematically equivalent. Correct. SCORE: 1
+
+EXAMPLE 2:
+# **Question**:
+What is the answer of 1+1?
+
+# **Model's answer**:
+\\boxed{3}
+
+# **Reference Answer (ground truth)**:
+\\boxed{2}
+
+# **Output**:
+The model's answer \\boxed{3} and the reference answer \\boxed{2} are not mathematically equivalent. Incorrect. SCORE: 0
+
+"""
         )
         prompt_text = (
-            f"Question: {sample['question']}\n\n"
-            f"Reference Answer (ground truth): {sample['reference_answer']}\n\n"
-            f"Model's answer: {test_response}\n\n"
+f""""
+# **Question**:
+{sample['question']}
+
+# **Model's answer**:
+{test_response}
+
+# **Reference Answer (ground truth)**:
+{sample['reference_answer']}
+
+# **Output**:
+"""
         )
         return [
             ChatCompletionSystemMessageParam(role="system", content=system_prompt),
@@ -97,33 +134,63 @@ class GS8MKTask(Task):
         ]
 
     def parse_judgment(self, judge_response: str) -> Judgment:
-        """Parse raw judge LLM response into a structured Judgment."""
-        # Extract score using regex
-        score_match = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)", judge_response, re.IGNORECASE)
-        if score_match:
-            score = float(score_match.group(1))
+        score_matches = re.findall(r"SCORE:\s*(0|1)\s*", judge_response.strip(), re.IGNORECASE | re.MULTILINE)
+        if len(score_matches) == 1:
+            score = float(score_matches[0])
+            return dict(
+                score=score,
+                rejudge=False,
+            )
         else:
-            # Fallback: look for any number
-            numbers = re.findall(r"\b\d+(?:\.\d+)?\b", judge_response)
-            if numbers:
-                score = float(numbers[0])
-            else:
-                score = 0.0
-
-        # Extract explanation
-        explanation_match = re.search(r"EXPLANATION:\s*(.+)", judge_response, re.DOTALL | re.IGNORECASE)
-        explanation = explanation_match.group(1).strip() if explanation_match else None
-
-        return dict(
-            score=score,
-            explanation=explanation,
-        )
+            return dict(score=0, rejudge=True)
 
     def rule_based_judge(self, sample: Dict, test_response: str) -> Judgment:
         """Rule-based judge."""
+        boxed_matches = re.findall(r"boxed\{([^}]*)\}", test_response.strip(), re.IGNORECASE | re.MULTILINE)
+        ground_truth_matches = re.findall(r"####\s*(.+)", sample['reference_answer'].strip(), re.IGNORECASE | re.MULTILINE)
+
+        if len(boxed_matches) == 0 or len(ground_truth_matches) == 0:
+            return dict(
+                score=0,
+                rejudge=True,
+                test_ans=boxed_matches[-1].strip() if len(boxed_matches) > 0 else "",
+                ground_truth_ans=ground_truth_matches[-1].strip() if len(ground_truth_matches) > 0 else ""
+            )
+
+        test_ans = boxed_matches[-1].strip()
+        ground_truth_ans = ground_truth_matches[-1].strip()
+        
+        # Extract numeric values for comparison
+        test_num = re.sub(r'[^\d\.\/\-+]', '', test_ans)
+        ground_truth_num = re.sub(r'[^\d\.\/\-+]', '', ground_truth_ans)
+        
+        # Handle fraction conversion
+        def eval_math_expr(expr):
+            try:
+                # Simple evaluation for fractions and basic math expressions
+                if '/' in expr and expr.count('/') == 1:
+                    numerator, denominator = expr.split('/')
+                    return float(numerator) / float(denominator)
+                else:
+                    return float(expr)
+            except:
+                return None
+                
+        test_value = eval_math_expr(test_num)
+        ground_truth_value = eval_math_expr(ground_truth_num)
+        
+        if test_value is not None and ground_truth_value is not None and abs(test_value - ground_truth_value) < 1e-9:
+            return dict(
+                score=1,
+                rejudge=False,
+                test_ans=test_ans,
+                ground_truth_ans=ground_truth_ans
+            )
         return dict(
             score=0,
-            explanation=None,
+            rejudge=False,
+            test_ans=test_ans,
+            ground_truth_ans=ground_truth_ans
         )
 
     def calculate_metrics(self, judgments: List[Judgment]) -> Metrics:
@@ -145,6 +212,7 @@ class GS8MKTask(Task):
         std_score = np.std(scores) if len(scores) > 1 else 0.0
         accuracy = np.mean([1 if s >= 0.5 else 0 for s in scores])
         pass_rate = np.mean([1 if s >= 0.8 else 0 for s in scores])
+        judge_failures = len([j for j in judgments if j['rejudge']])
         # Create distribution bins
         bins = {"0": 0, "1": 0}
         for s in scores:
@@ -160,6 +228,7 @@ class GS8MKTask(Task):
             accuracy=accuracy * 100,  # percentage
             pass_rate=pass_rate * 100,
             score_distribution=bins,
+            judge_failures=judge_failures,
         )
 
     @property
