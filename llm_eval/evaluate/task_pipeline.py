@@ -38,7 +38,9 @@ class Result(TypedDict):
     judge_response: Optional[str]
     judge_prompt: Optional[Prompt]
 
+
 MAX_REJUDGE_TRIES = 3
+
 
 class TaskPipeline:
     """Task‑based evaluation pipeline."""
@@ -83,47 +85,15 @@ class TaskPipeline:
                 logger.error(f"Failed to answer batch: {e}")
                 test_responses = [""] * len(batch_samples)
 
-            # Build judge prompts
-            judge_prompts: Iterable[Iterable[ChatCompletionMessageParam]] = [
-                self.task.build_judge_prompt(sample, test_response)
-                for sample, test_response in zip(batch_samples, test_responses)
-            ]
-            try:
-                judge_responses = self.judge_client.generate_batch(prompts=judge_prompts)
-            except Exception as e:
-                logger.error(f"Failed to judge batch: {e}")
-                judge_responses = [""] * len(batch_samples)
-
-            # Parse judgments
-            for sample, test_prompt, test_response, judge_prompt, judge_response in zip(
-                    batch_samples, test_prompts, test_responses, judge_prompts, judge_responses
-            ):
-                judgment = self.task.parse_judgment(judge_response)
-                if judgment['rejudge']:
-                    for _ in range(MAX_REJUDGE_TRIES):
-                        if not judgment.get('rejudge', False):
-                            break
-                        judge_response = self.judge_client.generate_batch([judge_prompt], temperature=random.uniform(0, 0.5))[0]
-                        judgment = self.task.parse_judgment(judge_response)
-                    if judgment['rejudge']:
-                        logger.error(
-                            f"Following judge failed after {MAX_REJUDGE_TRIES} rejudges.\n\n"
-                            f"Sample:\n {sample}\n\n"
-                            f"Test response:\n {test_response}\n\n"
-                            f"Final judge response:\n {judge_response}"
-                        )
-
-                results.append({
+            answers = [
+                {
                     "sample": sample,
-
-                    "judgment": judgment,
-
                     "test_response": test_response,
-                    "judge_response": judge_response,
-
                     "test_prompt": test_prompt,
-                    "judge_prompt": judge_prompt,
-                })
+                }
+                for sample, test_prompt, test_response in zip(batch_samples, test_prompts, test_responses)
+            ]
+            results += self.judge(answers, self.task.judge_policy)
 
         return results
 
@@ -160,8 +130,9 @@ class TaskPipeline:
         with open(answers_file, "r", encoding="utf-8") as f:
             answers = [json.loads(line) for line in f]
 
-        logger.info(f"Judge policy: {self.task.judge_policy}")
+        return self.judge(answers, self.task.judge_policy)
 
+    def judge(self, answers: list[Any], judge_policy: JudgePolicy) -> list[Any]:
         if self.task.judge_policy == JudgePolicy.RULE:
             return self.rule_judge(answers)
 
@@ -169,7 +140,7 @@ class TaskPipeline:
             return self.llm_judge(answers)
 
         if self.task.judge_policy == JudgePolicy.RULE_AND_LLM:
-            r =  self.rule_judge(answers)
+            r = self.rule_judge(answers)
             not_rejudges = [item for item in r if not item["judgment"]['rejudge']]
             rejudges = [item for item in r if item["judgment"]['rejudge']]
             rejudge_results = self.llm_judge(rejudges)
@@ -182,7 +153,7 @@ class TaskPipeline:
             rejudge_results = self.rule_judge(rejudges)
             return not_rejudges + rejudge_results
 
-        return []
+        raise ValueError(f"Invalid judge policy: {judge_policy}")
 
     def rule_judge(self, answers: list[Any]) -> list[Any]:
         results = []
